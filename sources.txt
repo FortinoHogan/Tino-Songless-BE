@@ -1,0 +1,52 @@
+# One source per line. Blank lines and lines starting with # are ignored.
+# search:<artist or keywords>   or   playlist:<deezer playlist id>
+search:ed sheeran
+search:bruno mars
+search:rihanna
+search:eminem
+search:drake
+search:ariana grande
+search:justin bieber
+search:dua lipa
+search:lady gaga
+search:maroon 5
+search:imagine dragons
+search:post malone
+search:harry styles
+search:olivia rodrigo
+search:justin timberlake
+search:katy perry
+search:shawn mendes
+search:selena gomez
+search:one direction
+search:linkin park
+search:metallica
+search:green day
+search:maroon 5
+search:backstreet boys
+search:britney spears
+search:christina aguilera
+search:usher
+search:50 cent
+search:snoop dogg
+search:jay-z
+search:kanye west
+search:travis scott
+search:kendrick lamar
+search:lana del rey
+search:the chainsmokers
+search:calvin harris
+search:david guetta
+search:avicii
+search:marshmello
+search:alan walker
+search:pitbull
+search:shakira
+search:katy perry
+search:the beatles
+search:queen
+search:michael jackson
+search:elton john
+search:bee gees
+search:bruno mars
+search:the strokes
