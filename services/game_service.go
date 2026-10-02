@@ -33,11 +33,14 @@ type player struct {
 }
 
 // roundState holds the PRIVATE answer. It only ever lives in server memory (and songs table); it is never serialized to clients before round_result.
+const clipMaxSeconds = 30 // max seconds of song audio players may reveal per round
+
 type roundState struct {
 	ID                uint
 	Num               int
 	Answer            models.Song
 	StartedAt, EndsAt time.Time
+	RevealUntil       time.Time // audio stays available until inter-round reveal ends
 	Token             string
 	Guesses           map[uint]string // last guess text per player
 	Solved            map[uint]bool
@@ -331,7 +334,9 @@ func (s *Service) startRoundLocked(g *live, first bool) error {
 	if err != nil {
 		return err
 	}
-	dur := time.Duration(g.RoundSecs) * time.Second
+	guessDur := time.Duration(g.RoundSecs) * time.Second
+	clipDur := time.Duration(clipMaxSeconds) * time.Second
+	revealDur := time.Duration(s.Cfg.RevealSeconds) * time.Second
 	now := time.Now()
 	r := models.Round{GameID: g.ID, RoundNumber: g.RoundNum + 1, SongID: song.ID, StartedAt: now, Status: "active"}
 	if err := s.DB.Create(&r).Error; err != nil {
@@ -342,11 +347,12 @@ func (s *Service) startRoundLocked(g *live, first bool) error {
 			return err
 		}
 	}
-	if err := s.RDB.Set(context.Background(), "audio:"+tok, fmt.Sprintf("%d:%d", g.ID, r.ID), dur+15*time.Second).Err(); err != nil {
+	tokTTL := guessDur + clipDur + revealDur + 15*time.Second
+	if err := s.RDB.Set(context.Background(), "audio:"+tok, fmt.Sprintf("%d:%d", g.ID, r.ID), tokTTL).Err(); err != nil {
 		return err
 	}
-	rs := &roundState{ID: r.ID, Num: r.RoundNumber, Answer: song, StartedAt: now, EndsAt: now.Add(dur), Token: tok, Guesses: map[uint]string{}, Solved: map[uint]bool{}, Wrong: map[uint]int{}, Pts: map[uint]int{}}
-	rs.timer = time.AfterFunc(dur, func() { g.mu.Lock(); defer g.mu.Unlock(); s.endLocked(g, rs) })
+	rs := &roundState{ID: r.ID, Num: r.RoundNumber, Answer: song, StartedAt: now, EndsAt: now.Add(guessDur), Token: tok, Guesses: map[uint]string{}, Solved: map[uint]bool{}, Wrong: map[uint]int{}, Pts: map[uint]int{}}
+	rs.timer = time.AfterFunc(guessDur, func() { g.mu.Lock(); defer g.mu.Unlock(); s.endLocked(g, rs) })
 	g.Used[song.ID] = true
 	g.Round, g.RoundNum, g.Last, g.Status = rs, r.RoundNumber, nil, "playing"
 	if first {
@@ -363,8 +369,9 @@ func (s *Service) endLocked(g *live, rs *roundState) {
 	}
 	rs.ending = true
 	rs.timer.Stop()
-	s.RDB.Del(context.Background(), "audio:"+rs.Token) // token dies with the round
 	now := time.Now()
+	reveal := time.Duration(s.Cfg.RevealSeconds) * time.Second
+	rs.RevealUntil = now.Add(reveal)
 	if err := s.DB.Model(&models.Round{}).Where("id=?", rs.ID).Updates(M{"status": "ended", "ended_at": now}).Error; err != nil {
 		log.Printf("end round: %v", err)
 	}
@@ -381,9 +388,8 @@ func (s *Service) endLocked(g *live, rs *roundState) {
 	a := rs.Answer
 	res := M{"roundNumber": rs.Num, "players": ps, "scores": g.scores(),
 		"song": M{"title": a.Title, "artist": a.Artist, "album": a.Album, "artworkUrl": a.ArtworkURL}}
-	reveal := time.Duration(s.Cfg.RevealSeconds) * time.Second
 	if rs.Num < g.Total {
-		res["nextRoundAt"] = ts(now.Add(reveal))
+		res["nextRoundAt"] = ts(rs.RevealUntil)
 	}
 	g.Last = res
 	g.emit(s, "round_ended", M{"roundId": sid(rs.ID), "roundNumber": rs.Num})
@@ -395,6 +401,9 @@ func (s *Service) endLocked(g *live, rs *roundState) {
 func (s *Service) advanceLocked(g *live, prev *roundState) {
 	if g.Round != prev || g.Status != "playing" {
 		return
+	}
+	if prev.Token != "" {
+		s.RDB.Del(context.Background(), "audio:"+prev.Token)
 	}
 	if g.RoundNum >= g.Total {
 		s.finishLocked(g)
@@ -569,7 +578,14 @@ func (s *Service) AudioSource(ctx context.Context, gid, uid uint, token string) 
 		return "", apperr.NotInGame
 	}
 	rs := g.Round
-	if rs == nil || rs.ending || rs.ID != tr || rs.Token != token || time.Now().After(rs.EndsAt) {
+	if rs == nil || rs.ID != tr || rs.Token != token {
+		return "", apperr.AudioUnavailable
+	}
+	until := rs.EndsAt
+	if rs.ending && rs.RevealUntil.After(until) {
+		until = rs.RevealUntil
+	}
+	if time.Now().After(until) {
 		return "", apperr.AudioUnavailable
 	}
 	return rs.Answer.AudioPath, nil
